@@ -1,0 +1,13 @@
+cd ./Desktop/audiometro
+.venv\Scripts\activate.bat
+python pc_audio\pc_audio_player.py --port COM3
+
+python pc_audio\pc_audio_player.py --port COM3 --baud 115200 --master-gain 0.10 --results-dir pc_audio\results
+
+port: obbligatoria, è la porta seriale della scheda, per esempio COM8.
+baud: velocità seriale, di default 115200.
+samplerate: frequenza di campionamento audio del PC, di default 48000.
+master-gain: attenuazione globale del volume sul PC, da 0.01 a 1.0, di default 0.10.
+results-dir: cartella dove salva il JSON finale, di default pc_audio\results.
+
+python pc_audio\pc_audio_player.py --port COM8 --listen-only --results-dir pc_audio\results

@@ -1,0 +1,13 @@
+LDM-slide introduttive per funzionamento progetto (implementazione audiometro)
+
+LM-slide configurazione scheda ioc
+
+A-slide per riassunto codice
+
+A-slide per evidenziare le funzioni principali
+
+F-slide per lo script python
+
+F-slide per interpretazioni risultati
+
+F-slide sui limiti dei risultati (non valore clinico, come potrebbe essere migliorato)
