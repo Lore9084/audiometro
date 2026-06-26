@@ -1,0 +1,77 @@
+{
+  "timestamp": "2026-06-26T12:59:57",
+  "results": {
+    "L": {
+      "125": -100.0,
+      "250": -100.0,
+      "500": -100.0,
+      "750": -41.0,
+      "1000": -55.0,
+      "1500": -48.0,
+      "2000": -63.5,
+      "3000": -65.0,
+      "4000": -67.0,
+      "6000": -63.5,
+      "8000": -48.0
+    },
+    "R": {
+      "125": -25.5,
+      "250": -52.0,
+      "500": -48.5,
+      "750": -60.0,
+      "1000": -65.0,
+      "1500": -65.5,
+      "2000": -67.0,
+      "3000": -65.5,
+      "4000": -55.0,
+      "6000": -65.5,
+      "8000": -65.5
+    }
+  },
+  "summary": {
+    "mean_dbfs": {
+      "L": -68.27272727272727,
+      "R": -57.72727272727273
+    },
+    "mean_abs_lr_diff_db": 23.272727272727273,
+    "max_abs_lr_diff_db": 74.5
+  },
+  "interpretation": {
+    "symmetry": {
+      "class": "asimmetria significativa",
+      "mean_abs_lr_diff_db": 23.272727272727273,
+      "max_abs_lr_diff_db": 74.5,
+      "flagged_freq_abs_diff_gt_4db": [
+        125,
+        250,
+        500,
+        750,
+        1000,
+        1500,
+        4000,
+        8000
+      ]
+    },
+    "spectral_profile": {
+      "low_band_mean_dbfs": -71.0,
+      "high_band_mean_dbfs": -61.357142857142854,
+      "low_minus_high_db": -9.642857142857146,
+      "class": "medie/alte piu penalizzate"
+    },
+    "stability": {
+      "std_db": {
+        "L": 20.93210196234443,
+        "R": 11.869295062860987
+      },
+      "slope_db_per_khz": {
+        "L": 3.7982933836456416,
+        "R": -2.269113674370739
+      }
+    },
+    "verdict": "Profilo con asimmetrie da ricontrollare",
+    "notes": [
+      "Valori in dBFS: non equivalgono a dB HL clinici.",
+      "Interpretazione influenzata da cuffie, ambiente e calibrazione master-gain."
+    ]
+  }
+}

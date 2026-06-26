@@ -1,30 +1,10 @@
 /* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file    main.c
-  * @brief   Audiometro base – B-L475E-IOT01A
-  *
-   * COME FUNZIONA (versione semplificata, due orecchie):
-  *
-  *  1. Viene generata una tabella (LUT) con i valori di una sinusoide.
-  *  2. TIM4 scandisce la LUT tramite DMA → DAC → uscita analogica su PA4.
-  *     Cambiando il periodo di TIM4 si cambia la frequenza del suono.
-  *  3. TIM2 scatta ogni 100 ms e aumenta il volume (gain) poco alla volta.
-   *  4. Quando l'utente sente il suono, preme il pulsante (PC13).
-   *     Il valore di gain in quel momento viene salvato come risultato.
-   *  5. Si passa alla frequenza successiva e si ripete.
-   *  6. Terminato un orecchio, il test riparte sull'altro lato.
-   *  7. Alla fine i risultati vengono inviati al PC via UART (115200 baud).
-  *
-  ******************************************************************************
-  */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <math.h>
 #include <stdio.h>
 #include <stdarg.h>
 /* USER CODE END Includes */
@@ -38,14 +18,12 @@
 /* USER CODE BEGIN PD */
 
 /* --- Parametri principali --- */
-#define N_SAMPLES    128     /* campioni nella LUT: più sono, più l'onda è precisa */
 #define N_EARS       2       /* orecchie testate: sinistro + destro                  */
 #define N_FREQ       11      /* numero di frequenze testate                        */
 #define START_DBFS   -70.0f  /* livello base abbassato per accomodare le alte frequenze */
 #define STEP_DBFS    0.5f    /* incremento ad ogni tick di TIM2 (dB)               */
 #define MAX_DBFS     -20.0f  /* limite massimo per sicurezza/ascolto confortevole  */
 #define PAUSE_TICKS  4       /* pausa tra frequenze (4 x 500ms = 2s)               */
-#define USE_PC_AUDIO 1       /* 1 = audio generato da script Python su PC via UART */
 
 /* USER CODE END PD */
 
@@ -55,11 +33,7 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-DAC_HandleTypeDef hdac1;
-DMA_HandleTypeDef hdma_dac_ch1;
-
 TIM_HandleTypeDef htim2;
-TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
 
@@ -87,13 +61,6 @@ static const float START_OFFSET_DB[N_FREQ] = {
   +4.0f    /* 8000 Hz: soglia -61.0, start = -70 +  4.0 = -66.0 */
 };
 
-/* LUT: valori della sinusoide a piena scala (0..4095) */
-static uint16_t lut[N_SAMPLES];
-
-/* Buffer DMA: LUT scalata per il gain corrente.
-   È diviso in due metà per il double-buffering (vedi callback DMA). */
-static uint16_t dac_buf[2 * N_SAMPLES];
-
 /* --- Stato del test --- */
 static int   ear_idx      = 0;      /* orecchio corrente: 0=L, 1=R                     */
 static int   freq_idx     = 0;      /* quale frequenza stiamo testando ora */
@@ -111,14 +78,9 @@ static float results[N_EARS][N_FREQ];
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_DMA_Init(void);
 static void MX_TIM2_Init(void);
-static void MX_DAC1_Init(void);
 static void MX_USART1_UART_Init(void);
-static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
-static void build_lut(void);
-static void fill_dac_buf(int half);
 static void start_tone(float freq, char ear);
 static void stop_tone(void);
 static void send_results(void);
@@ -131,21 +93,6 @@ static char current_ear(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-/*
- * build_lut
- * Riempie la tabella con i valori di un'onda sinusoidale.
- * Formula: sample = (sin(angolo) + 1) / 2 * 4095
- *   → sposta il segnale da [-1,+1] a [0, 4095] (range del DAC a 12 bit)
- */
-static void build_lut(void)
-{
-    for (int i = 0; i < N_SAMPLES; i++)
-    {
-        float angle = 2.0f * (float)M_PI * i / N_SAMPLES;
-        lut[i] = (uint16_t)((sinf(angle) + 1.0f) * 2047.5f);
-    }
-}
 
 static void uart_send_line(const char *fmt, ...)
 {
@@ -198,74 +145,26 @@ static char current_ear(void)
 }
 
 /*
- * fill_dac_buf
- * Copia una metà del buffer DMA moltiplicando ogni campione per il gain.
- * Il gain scala l'ampiezza: gain=1.0 → volume massimo, gain=0.05 → quasi zero.
- *
- * Il buffer è diviso in due metà perché mentre il DMA trasmette una metà,
- * la CPU aggiorna l'altra (double buffering → nessun rumore o salto nel suono).
- */
-static void fill_dac_buf(int half)
-{
-    int offset = half * N_SAMPLES;
-    for (int i = 0; i < N_SAMPLES; i++)
-    {
-        float val = lut[i] * gain;
-        if (val > 4095.0f) val = 4095.0f;
-        dac_buf[offset + i] = (uint16_t)val;
-    }
-}
-
-/*
  * start_tone
- * Avvia la riproduzione di un tono alla frequenza richiesta.
- *
- * TIM4 genera un evento ogni (ARR+1) cicli di clock.
- * Ogni evento fa avanzare il DMA di un campione nella LUT.
- * Con N_SAMPLES campioni per periodo:
- *   f_audio = SystemCoreClock / (ARR+1) / N_SAMPLES
- * Quindi:  ARR = SystemCoreClock / (f_audio * N_SAMPLES) - 1
+ * In modalita PC audio la scheda non genera il tono: invia solo il comando UART.
  */
 static void start_tone(float freq, char ear)
 {
-#if USE_PC_AUDIO
   uart_send_line("AUDIO START %c %.1f %.3f\r\n", ear, freq, gain);
-#else
-    uint32_t arr = (uint32_t)(SystemCoreClock / (freq * N_SAMPLES)) - 1;
-    __HAL_TIM_SET_AUTORELOAD(&htim4, arr);
-    __HAL_TIM_SET_COUNTER(&htim4, 0);
-
-    fill_dac_buf(0);
-    fill_dac_buf(1);
-
-    HAL_TIM_Base_Start(&htim4);
-    HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1,
-                      (uint32_t *)dac_buf, 2 * N_SAMPLES,
-                      DAC_ALIGN_12B_R);
-  #endif
 }
 
 /*
  * stop_tone
- * Ferma il DAC e TIM4.
+ * In modalita PC audio la scheda invia il comando di stop al PC.
  */
 static void stop_tone(void)
 {
-#if USE_PC_AUDIO
   uart_send_line("AUDIO STOP\r\n");
-#else
-    HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
-    HAL_TIM_Base_Stop(&htim4);
-#endif
 }
 
 static void pc_audio_set_gain(float new_gain, char ear)
 {
-#if USE_PC_AUDIO
   uart_send_line("AUDIO GAIN %c %.3f\r\n", ear, new_gain);
-#else
-  (void)new_gain;
-#endif
 }
 
 /*
@@ -329,14 +228,8 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM2_Init();
   MX_USART1_UART_Init();
-#if !USE_PC_AUDIO
-  MX_DMA_Init();
-  MX_DAC1_Init();
-  MX_TIM4_Init();
-#endif
   /* USER CODE BEGIN 2 */
 
-    build_lut();
     set_level_for_current_freq();
     uart_send_line("AUDIO MODE PC\r\n");
     start_tone(FREQ[freq_idx], current_ear());
@@ -411,49 +304,6 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief DAC1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_DAC1_Init(void)
-{
-
-  /* USER CODE BEGIN DAC1_Init 0 */
-
-  /* USER CODE END DAC1_Init 0 */
-
-  DAC_ChannelConfTypeDef sConfig = {0};
-
-  /* USER CODE BEGIN DAC1_Init 1 */
-
-  /* USER CODE END DAC1_Init 1 */
-
-  /** DAC Initialization
-  */
-  hdac1.Instance = DAC1;
-  if (HAL_DAC_Init(&hdac1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** DAC channel OUT1 config
-  */
-  sConfig.DAC_SampleAndHold = DAC_SAMPLEANDHOLD_DISABLE;
-  sConfig.DAC_Trigger = DAC_TRIGGER_T4_TRGO;
-  sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
-  sConfig.DAC_ConnectOnChipPeripheral = DAC_CHIPCONNECT_DISABLE;
-  sConfig.DAC_UserTrimming = DAC_TRIMMING_FACTORY;
-  if (HAL_DAC_ConfigChannel(&hdac1, &sConfig, DAC_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN DAC1_Init 2 */
-
-  /* USER CODE END DAC1_Init 2 */
-
-}
-
-/**
   * @brief TIM2 Initialization Function
   * @param None
   * @retval None
@@ -499,51 +349,6 @@ static void MX_TIM2_Init(void)
 }
 
 /**
-  * @brief TIM4 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM4_Init(void)
-{
-
-  /* USER CODE BEGIN TIM4_Init 0 */
-
-  /* USER CODE END TIM4_Init 0 */
-
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-
-  /* USER CODE BEGIN TIM4_Init 1 */
-
-  /* USER CODE END TIM4_Init 1 */
-  htim4.Instance = TIM4;
-  htim4.Init.Prescaler = 0;
-  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim4.Init.Period = 65535;
-  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM4_Init 2 */
-
-  /* USER CODE END TIM4_Init 2 */
-
-}
-
-/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
@@ -575,22 +380,6 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
-
-}
-
-/**
-  * Enable DMA controller clock
-  */
-static void MX_DMA_Init(void)
-{
-
-  /* DMA controller clock enable */
-  __HAL_RCC_DMA1_CLK_ENABLE();
-
-  /* DMA interrupt init */
-  /* DMA1_Channel3_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
 
 }
 
@@ -710,26 +499,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
             }
         }
     }
-}
-
-/* DMA ha trasmesso la prima metà → aggiornala per il ciclo successivo */
-void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac)
-{
-#if !USE_PC_AUDIO
-    fill_dac_buf(0);
-#else
-  (void)hdac;
-#endif
-}
-
-/* DMA ha trasmesso la seconda metà → aggiornala per il ciclo successivo */
-void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac)
-{
-#if !USE_PC_AUDIO
-    fill_dac_buf(1);
-#else
-  (void)hdac;
-#endif
 }
 
 /* Interrupt del pulsante (PC13, falling edge) → imposta solo il flag */
