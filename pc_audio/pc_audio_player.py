@@ -30,13 +30,14 @@ RESULT_LINE_RE = re.compile(r"^Freq\s+(\d+)\s+Hz\s+→\s+(-?\d+(?:\.\d+)?)\s+dBF
 class ResultCollector:
     """Raccoglie, interpreta e salva i risultati finali arrivati via UART."""
 
-    def __init__(self, output_dir: str, expected_ears=None, expected_freq_count: int = 11):
+    def __init__(self, output_dir: str, expected_ears=None, expected_freq_count: int = 11, offset=None):
         # Cartella in cui salvare il JSON finale.
         self.output_dir = Path(output_dir)
         # In questo progetto ci aspettiamo due orecchi: sinistro e destro.
         self.expected_ears = expected_ears or ("L", "R")
         # Numero di frequenze attese per ciascun orecchio.
         self.expected_freq_count = expected_freq_count
+        self.offset = offset
         self.reset()
 
     def reset(self):
@@ -100,8 +101,18 @@ class ResultCollector:
 
     def _build_payload(self):
         # Dati grezzi dei due orecchi.
-        left = self.results.get("L", {})
-        right = self.results.get("R", {})
+        left_raw = self.results.get("L", {})
+        right_raw = self.results.get("R", {})
+
+        #aggiungo offset se presente
+        if self.offset is not None:
+            left = {f: v + self.offset for f, v in left_raw.items()}
+            right = {f: v + self.offset for f, v in right_raw.items()}
+            unit = "dB_SPL_est"
+        else:
+            left = left_raw
+            right = right_raw
+            unit = "dBFS"
 
         # Frequenze presenti su entrambi i lati: servono per confronti diretti.
         common_freq = sorted(set(left.keys()) & set(right.keys()))
@@ -155,16 +166,17 @@ class ResultCollector:
         def classify_low_vs_high(delta_db):
             # delta > 0: basse frequenze richiedono piu livello (atteso con cuffie consumer)
             if delta_db >= 12.0:
-                return "forte penalizzazione basse frequenze"
+                return "minore sensibilità alle basse frequenze, necessità di livelli più alti"
             if delta_db >= 6.0:
-                return "moderata penalizzazione basse frequenze"
+                return "moderata riduzione di sensibilità alle basse frequenze, necessità di livelli più alti"
             if delta_db <= -6.0:
-                return "medie/alte piu penalizzate"
+                return "minore sensibilità alle alte frequenze, necessità di livelli più alti"
             return "profilo abbastanza uniforme"
 
         summary = {
             # Media complessiva per orecchio e scarto medio assoluto L/R.
-            "mean_dbfs": {
+            "unit": unit,
+            "mean_level": {
                 "L": mean(list(left.values())),
                 "R": mean(list(right.values())),
             },
@@ -212,22 +224,18 @@ class ResultCollector:
                     "L": slope_db_per_khz(left),
                     "R": slope_db_per_khz(right),
                 },
-            },
-            "verdict": (
-                "Profilo complessivamente buono e simmetrico"
-                if mean_lr_diff <= 4.0
-                else "Profilo con asimmetrie da ricontrollare"
-            ),
-            "notes": [
-                "Valori in dBFS: non equivalgono a dB HL clinici.",
-                "Interpretazione influenzata da cuffie, ambiente e calibrazione master-gain.",
-            ],
+            }
         }
 
         # Il payload finale contiene sia i dati grezzi sia l'interpretazione.
         return {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "results": {
+            "results_dbfs": {
+                "L": {str(k): v for k, v in sorted(left_raw.items())},
+                "R": {str(k): v for k, v in sorted(right_raw.items())},
+            },
+
+            "results_calibrated": {
                 "L": {str(k): v for k, v in sorted(left.items())},
                 "R": {str(k): v for k, v in sorted(right.items())},
             },
@@ -347,6 +355,7 @@ def parse_args():
     parser.add_argument("--port", required=True, help="Serial port, e.g. COM5")
     parser.add_argument("--baud", type=int, default=115200, help="Serial baudrate")
     parser.add_argument("--samplerate", type=int, default=48000, help="Audio sample rate")
+    parser.add_argument("--offset", type=float, default=None, help="Convert dBFS to estimated dB SPL")
     parser.add_argument(
         "--master-gain",
         type=float,
@@ -372,7 +381,7 @@ def main():
 
     # In modalita listen-only il PC non apre l'uscita audio: resta solo il monitoraggio seriale.
     player = None if args.listen_only else TonePlayer(args.samplerate, args.master_gain)
-    collector = ResultCollector(args.results_dir)
+    collector = ResultCollector(args.results_dir, offset=args.offset)
 
     print(f"[serial] Opening {args.port} @ {args.baud}")
     if player is not None:
@@ -406,7 +415,7 @@ def main():
                     f"mean L={summary['mean_dbfs']['L']:.2f} dBFS "
                     f"mean R={summary['mean_dbfs']['R']:.2f} dBFS "
                     f"mean |L-R|={summary['mean_abs_lr_diff_db']:.2f} dB | "
-                    f"verdetto={interpretation['verdict']}"
+                    #f"verdetto={interpretation['verdict']}"
                 )
 
             # I comandi AUDIO servono solo quando il PC deve riprodurre il suono.
