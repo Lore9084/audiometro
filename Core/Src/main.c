@@ -9,7 +9,7 @@
   *  1. Viene generata una tabella (LUT) con i valori di una sinusoide.
   *  2. TIM4 scandisce la LUT tramite DMA → DAC → uscita analogica su PA4.
   *     Cambiando il periodo di TIM4 si cambia la frequenza del suono.
-  *  3. TIM2 scatta ogni 100 ms e aumenta il volume (gain) poco alla volta.
+  *  3. TIM2 scatta ogni 500 ms e aumenta il volume (gain) poco alla volta.
    *  4. Quando l'utente sente il suono, preme il pulsante (PC13).
    *     Il valore di gain in quel momento viene salvato come risultato.
    *  5. Si passa alla frequenza successiva e si ripete.
